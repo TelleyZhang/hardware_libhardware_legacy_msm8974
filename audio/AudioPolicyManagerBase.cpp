@@ -1,4 +1,7 @@
 /*
+ * Copyright (c) 2013, The Linux Foundation. All rights reserved.
+ * Not a Contribution.
+ *
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,6 +15,25 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * This file was modified by Dolby Laboratories, Inc. The portions of the
+ * code that are surrounded by "DOLBY..." are copyrighted and
+ * licensed separately, as follows:
+ *
+ *  (C) 2011-2014 Dolby Laboratories, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
  */
 
 #define LOG_TAG "AudioPolicyManagerBase"
@@ -26,7 +48,11 @@
 
 // A device mask for all audio input devices that are considered "virtual" when evaluating
 // active inputs in getActiveInput()
+#ifdef AUDIO_EXTN_FM_ENABLED
+#define APM_AUDIO_IN_DEVICE_VIRTUAL_ALL  (AUDIO_DEVICE_IN_REMOTE_SUBMIX | AUDIO_DEVICE_IN_FM_RX_A2DP)
+#else
 #define APM_AUDIO_IN_DEVICE_VIRTUAL_ALL  AUDIO_DEVICE_IN_REMOTE_SUBMIX
+#endif
 // A device mask for all audio output devices that are considered "remote" when evaluating
 // active output devices in isStreamActiveRemotely()
 #define APM_AUDIO_OUT_DEVICE_REMOTE_ALL  AUDIO_DEVICE_OUT_REMOTE_SUBMIX
@@ -45,6 +71,96 @@ namespace android_audio_legacy {
 // AudioPolicyInterface implementation
 // ----------------------------------------------------------------------------
 
+#ifdef DOLBY_UDC
+// System property shared with dolby codec
+#define DOLBY_SYSTEM_PROPERTY "dolby.audio.sink.info"
+
+enum HdmiDeviceCapability {
+    CAP_HDMI_INVALID,
+    CAP_HDMI_2,
+    CAP_HDMI_6,
+    CAP_HDMI_8,
+};
+
+class DolbySystemProperty
+{
+    static HdmiDeviceCapability mCurrentHdmiDeviceCapability;
+public:
+
+    static void setHdmiCapability(HdmiDeviceCapability cap)
+    {
+        ALOGV("DOLBY_ENDPOINT setHdmiDeviceCapability = %d", cap);
+        mCurrentHdmiDeviceCapability = cap;
+    }
+
+    // Sets the dolby system property dolby.audio.sink.info
+    //
+    // At present we are only setting system property for Headphone/Headset/HDMI/Speaker
+    // and the same is supported in DDPDecoder.cpp EndpointConfig table.
+    // if new device is available eg. bluetooth or usb_audio, then system property
+    // must set in this function and also its downmix configuration should be set in
+    // DDPDecoder.cpp EndpointConfig table.
+    static void set(audio_devices_t device)
+    {
+        ALOGV("DolbySystemProperty::set device 0x%x", device);
+        switch(device) {
+            case AUDIO_DEVICE_OUT_WIRED_HEADSET:
+            case AUDIO_DEVICE_OUT_WIRED_HEADPHONE:
+                ALOGV("DOLBY_ENDPOINT HEADPHONE");
+                property_set(DOLBY_SYSTEM_PROPERTY, "headset");
+                break;
+            /*case AUDIO_DEVICE_OUT_XXX:
+              example case of bluetooth
+            case AUDIO_DEVICE_OUT_BLUETOOTH_A2DP:
+            case AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_HEADPHONES:
+            case AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_SPEAKER:
+            case AUDIO_DEVICE_OUT_BLUETOOTH_SCO:
+            case AUDIO_DEVICE_OUT_BLUETOOTH_SCO_CARKIT:
+            case AUDIO_DEVICE_OUT_BLUETOOTH_SCO_HEADSET:
+                property_set(DOLBY_SYSTEM_PROPERTY,"bluetooth");
+                break;
+            */
+            case AUDIO_DEVICE_OUT_AUX_DIGITAL:
+                if(mCurrentHdmiDeviceCapability == CAP_HDMI_8)
+                {
+                    property_set(DOLBY_SYSTEM_PROPERTY, "hdmi8");
+                    ALOGV("DOLBY_ENDPOINT HDMI8");
+                }
+                else if (mCurrentHdmiDeviceCapability == CAP_HDMI_6)
+                {
+                    property_set(DOLBY_SYSTEM_PROPERTY, "hdmi6");
+                    ALOGV("DOLBY_ENDPOINT HDMI6");
+                }
+                else //mCurrentHdmiDeviceCapability == HDMI_2 or unknown
+                {
+                    ALOGV("DOLBY_ENDPOINT HDMI2");
+                    property_set(DOLBY_SYSTEM_PROPERTY, "hdmi2");
+                }
+                break;
+            case AUDIO_DEVICE_OUT_SPEAKER:
+                ALOGV("DOLBY_ENDPOINT SPEAKER");
+                property_set(DOLBY_SYSTEM_PROPERTY, "speaker");
+                break;
+            case AUDIO_DEVICE_OUT_REMOTE_SUBMIX:
+                ALOGV("DOLBY_ENDPOINT HDMI2");
+                property_set(DOLBY_SYSTEM_PROPERTY, "hdmi2");
+                break;
+            case AUDIO_DEVICE_OUT_DEFAULT:
+                // If the strategy for handling the current value of
+                // mAvailableOutputDevices is not implemented
+                // AUDIO_DEVICE_OUT_DEFAULT is set.
+                // fall-through
+            default:
+                ALOGV("DOLBY_ENDPOINT INVALID");
+                property_set(DOLBY_SYSTEM_PROPERTY, "invalid");
+                break;
+        }
+    }
+};
+
+HdmiDeviceCapability DolbySystemProperty::mCurrentHdmiDeviceCapability = CAP_HDMI_INVALID;
+
+#endif //DOLBY_END
 
 status_t AudioPolicyManagerBase::setDeviceConnectionState(audio_devices_t device,
                                                   AudioSystem::device_connection_state state,
@@ -174,6 +290,10 @@ status_t AudioPolicyManagerBase::setDeviceConnectionState(audio_devices_t device
         }
 
         updateDevicesAndOutputs();
+#ifdef DOLBY_UDC
+        audio_devices_t audioOutputDevice = getDeviceForStrategy(getStrategy(AudioSystem::MUSIC), false);
+        DolbySystemProperty::set(audioOutputDevice);
+#endif //DOLBY_END
         for (size_t i = 0; i < mOutputs.size(); i++) {
             // do not force device change on duplicated output because if device is 0, it will
             // also force a device 0 for the two outputs it is duplicated to which may override
@@ -375,6 +495,15 @@ void AudioPolicyManagerBase::setPhoneState(int state)
     // change routing is necessary
     setOutputDevice(mPrimaryOutput, newDevice, force, delayMs);
 
+    //update device for all non-primary outputs
+    for (size_t i = 0; i < mOutputs.size(); i++) {
+        audio_io_handle_t output = mOutputs.keyAt(i);
+        if (output != mPrimaryOutput) {
+            newDevice = getNewDevice(output, false /*fromCache*/);
+            setOutputDevice(output, newDevice, (newDevice != AUDIO_DEVICE_NONE));
+        }
+    }
+
     // if entering in call state, handle special case of active streams
     // pertaining to sonification strategy see handleIncallSonification()
     if (isStateInCall(state)) {
@@ -516,7 +645,7 @@ AudioPolicyManagerBase::IOProfile *AudioPolicyManagerBase::getProfileForDirectOu
             } else {
                 if (profile->isCompatibleProfile(device, samplingRate, format,
                                            channelMask,
-                                           AUDIO_OUTPUT_FLAG_DIRECT)) {
+                                           (audio_output_flags_t)(AUDIO_OUTPUT_FLAG_DIRECT | flags))) {
                     if (mAvailableOutputDevices & profile->mSupportedDevices) {
                         return mHwModules[i]->mOutputProfiles[j];
                     }
@@ -538,6 +667,7 @@ audio_io_handle_t AudioPolicyManagerBase::getOutput(AudioSystem::stream_type str
     uint32_t latency = 0;
     routing_strategy strategy = getStrategy((AudioSystem::stream_type)stream);
     audio_devices_t device = getDeviceForStrategy(strategy, false /*fromCache*/);
+    IOProfile *profile = NULL;
     ALOGV("getOutput() device %d, stream %d, samplingRate %d, format %x, channelMask %x, flags %x",
           device, stream, samplingRate, format, channelMask, flags);
 
@@ -582,15 +712,20 @@ audio_io_handle_t AudioPolicyManagerBase::getOutput(AudioSystem::stream_type str
         flags = (AudioSystem::output_flags)(flags | AUDIO_OUTPUT_FLAG_DIRECT);
     }
 
+    if ((format == AudioSystem::PCM_16_BIT) &&(AudioSystem::popCount(channelMask) > 2)) {
+        ALOGV("owerwrite flag(%x) for PCM16 multi-channel(CM:%x) playback", flags ,channelMask);
+        flags = (AudioSystem::output_flags)AUDIO_OUTPUT_FLAG_DIRECT;
+    }
+
     // Do not allow offloading if one non offloadable effect is enabled. This prevents from
     // creating an offloaded track and tearing it down immediately after start when audioflinger
     // detects there is an active non offloadable effect.
     // FIXME: We should check the audio session here but we do not have it in this context.
     // This may prevent offloading in rare situations where effects are left active by apps
     // in the background.
-    IOProfile *profile = NULL;
-    if (((flags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) == 0) ||
-            !isNonOffloadableEffectEnabled()) {
+    if ((((flags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) == 0) ||
+            !isNonOffloadableEffectEnabled()) &&
+            flags & AUDIO_OUTPUT_FLAG_DIRECT) {
         profile = getProfileForDirectOutput(device,
                                            samplingRate,
                                            format,
@@ -794,6 +929,17 @@ status_t AudioPolicyManagerBase::startOutput(audio_io_handle_t output,
             usleep((waitMs - muteWaitMs) * 2 * 1000);
         }
     }
+#ifdef DOLBY_UDC
+    // It is observed that in some use-cases where both outputs are present eg. bluetooth and headphone,
+    // the output for particular stream type is decided in this routine. Hence we must call
+    // getDeviceForStrategy in order to get the current active output for this stream type and update
+    // the dolby system property.
+    if (stream == AudioSystem::MUSIC)
+    {
+        audio_devices_t audioOutputDevice = getDeviceForStrategy(getStrategy(AudioSystem::MUSIC), true);
+        DolbySystemProperty::set(audioOutputDevice);
+    }
+#endif // DOLBY_END
     return NO_ERROR;
 }
 
@@ -1472,6 +1618,13 @@ bool AudioPolicyManagerBase::isOffloadSupported(const audio_offload_info_t& offl
         }
     }
 
+    //check if it's multi-channel AAC format
+    if (AudioSystem::popCount(offloadInfo.channel_mask) > 2
+            && offloadInfo.format == AUDIO_FORMAT_AAC) {
+        ALOGV("offload disabled for multi-channel AAC format");
+        return false;
+    }
+
     // Check if stream type is music, then only allow offload as of now.
     if (offloadInfo.stream_type != AUDIO_STREAM_MUSIC)
     {
@@ -1482,8 +1635,30 @@ bool AudioPolicyManagerBase::isOffloadSupported(const audio_offload_info_t& offl
     //TODO: enable audio offloading with video when ready
     if (offloadInfo.has_video)
     {
-        ALOGV("isOffloadSupported: has_video == true, returning false");
-        return false;
+        if(property_get("av.offload.enable", propValue, NULL)) {
+            bool prop_enabled = atoi(propValue) || !strncmp("true", propValue, 4);
+            if (!prop_enabled) {
+               ALOGW("offload disabled by av.offload.enable = %s ", propValue );
+               return false;
+            }
+        } else {
+            return false;
+        }
+
+        if(offloadInfo.is_streaming) {
+            if (property_get("av.streaming.offload.enable", propValue, NULL)) {
+                bool prop_enabled = atoi(propValue) || !strncmp("true", propValue, 4);
+                if (!prop_enabled) {
+                   ALOGW("offload disabled by av.streaming.offload.enable = %s ", propValue );
+                   return false;
+                }
+            } else {
+                //Do not offload AV streamnig if the property is not defined
+                return false;
+            }
+        }
+        ALOGV("isOffloadSupported: has_video == true, property\
+                set to enable offload");
     }
 
     //If duration is less than minimum value defined in property, return false
@@ -1494,7 +1669,10 @@ bool AudioPolicyManagerBase::isOffloadSupported(const audio_offload_info_t& offl
         }
     } else if (offloadInfo.duration_us < OFFLOAD_DEFAULT_MIN_DURATION_SECS * 1000000) {
         ALOGV("Offload denied by duration < default min(=%u)", OFFLOAD_DEFAULT_MIN_DURATION_SECS);
-        return false;
+        //duration checks only valid for MP3/AAC formats,
+        //do not check duration for other audio formats, e.g. dolby AAC/AC3 and amrwb+ formats
+        if (offloadInfo.format == AUDIO_FORMAT_MP3 || offloadInfo.format == AUDIO_FORMAT_AAC)
+            return false;
     }
 
     // Do not allow offloading if one non offloadable effect is enabled. This prevents from
@@ -1541,6 +1719,12 @@ AudioPolicyManagerBase::AudioPolicyManagerBase(AudioPolicyClientInterface *clien
         mForceUse[i] = AudioSystem::FORCE_NONE;
     }
 
+#ifdef DOLBY_UDC
+    // Set dolby system property to speaker while booting,
+    // if any other device is plugged-in setDeviceConnectionState will be called which
+    // should set appropriate system property.
+    DolbySystemProperty::set(AUDIO_DEVICE_OUT_SPEAKER);
+#endif // DOLBY_END
     mA2dpDeviceAddress = String8("");
     mScoDeviceAddress = String8("");
     mUsbCardAndDevice = String8("");
@@ -1962,12 +2146,44 @@ status_t AudioPolicyManagerBase::checkOutputsForDevice(audio_devices_t device,
                         output = 0;
                     }
                 }
+#ifdef DOLBY_UDC
+                if (device == AUDIO_DEVICE_OUT_AUX_DIGITAL)
+                {
+                    bool supportHDMI8 = false;
+                    for (uint32_t i = 0; i < profile->mChannelMasks.size(); ++i)
+                    {
+                        audio_channel_mask_t channelMask = profile->mChannelMasks[i];
+                        if (channelMask == AUDIO_CHANNEL_OUT_7POINT1)
+                        {
+                            supportHDMI8 = true;
+                            break;
+                        }
+                    }
+
+                    if (supportHDMI8)
+                    {
+                        DolbySystemProperty::setHdmiCapability(CAP_HDMI_8);
+                    }
+                    else
+                    {
+                        DolbySystemProperty::setHdmiCapability(CAP_HDMI_6);
+                    }
+                }
+#endif //DOLBY_END
             }
             if (output == 0) {
                 ALOGW("checkOutputsForDevice() could not open output for device %x", device);
                 delete desc;
                 profiles.removeAt(profile_index);
                 profile_index--;
+#ifdef DOLBY_UDC
+                if (device == AUDIO_DEVICE_OUT_AUX_DIGITAL)
+                {
+                    // Seems the current behaviour for HDMI 2 case is to have output to be
+                    // equal to 0.
+                    DolbySystemProperty::setHdmiCapability(CAP_HDMI_2);
+                }
+#endif // DOLBY_END
             } else {
                 outputs.add(output);
                 ALOGV("checkOutputsForDevice(): adding output %d", output);
@@ -1979,6 +2195,12 @@ status_t AudioPolicyManagerBase::checkOutputsForDevice(audio_devices_t device,
             return BAD_VALUE;
         }
     } else {
+#ifdef DOLBY_UDC
+        if (device == AUDIO_DEVICE_OUT_AUX_DIGITAL)
+        {
+            DolbySystemProperty::setHdmiCapability(CAP_HDMI_INVALID);
+        }
+#endif //DOLBY_END
         // check if one opened output is not needed any more after disconnecting one device
         for (size_t i = 0; i < mOutputs.size(); i++) {
             desc = mOutputs.valueAt(i);
@@ -2103,7 +2325,7 @@ void AudioPolicyManagerBase::checkOutputForStrategy(routing_strategy strategy)
 {
     audio_devices_t oldDevice = getDeviceForStrategy(strategy, true /*fromCache*/);
     audio_devices_t newDevice = getDeviceForStrategy(strategy, false /*fromCache*/);
-    SortedVector<audio_io_handle_t> srcOutputs = getOutputsForDevice(oldDevice, mPreviousOutputs);
+    SortedVector<audio_io_handle_t> srcOutputs = getOutputsForDevice(oldDevice, mOutputs);
     SortedVector<audio_io_handle_t> dstOutputs = getOutputsForDevice(newDevice, mOutputs);
 
     if (!vectorsEqual(srcOutputs,dstOutputs)) {
@@ -2295,6 +2517,9 @@ AudioPolicyManagerBase::routing_strategy AudioPolicyManagerBase::getStrategy(
         // while key clicks are played produces a poor result
     case AudioSystem::TTS:
     case AudioSystem::MUSIC:
+#ifdef AUDIO_EXTN_INCALL_MUSIC_ENABLED
+    case AudioSystem::INCALL_MUSIC:
+#endif
         return STRATEGY_MEDIA;
     case AudioSystem::ENFORCED_AUDIBLE:
         return STRATEGY_ENFORCED_AUDIBLE;
@@ -2634,7 +2859,12 @@ uint32_t AudioPolicyManagerBase::setOutputDevice(audio_io_handle_t output,
 
     ALOGV("setOutputDevice() prevDevice %04x", prevDevice);
 
-    if (device != AUDIO_DEVICE_NONE) {
+    // Device Routing has not been triggered in the following scenario:
+    // Start playback on HDMI, pause it, unplug and plug HDMI cable, resume
+    // playback, music starts on speaker. To avoid this, update mDevice even
+    // if device is 0 which triggers routing when HDMI cable is reconnected
+    if (device != AUDIO_DEVICE_NONE ||
+        prevDevice == AUDIO_DEVICE_OUT_AUX_DIGITAL) {
         outputDesc->mDevice = device;
     }
     muteWaitMs = checkDeviceMuteStrategies(outputDesc, prevDevice, delayMs);
@@ -2964,6 +3194,13 @@ const AudioPolicyManagerBase::VolumeCurvePoint
         sSpeakerMediaVolumeCurve, // DEVICE_CATEGORY_SPEAKER
         sDefaultMediaVolumeCurve  // DEVICE_CATEGORY_EARPIECE
     },
+#ifdef AUDIO_EXTN_INCALL_MUSIC_ENABLED
+    { // AUDIO_STREAM_INCALL_MUSIC
+        sDefaultMediaVolumeCurve, // DEVICE_CATEGORY_HEADSET
+        sSpeakerMediaVolumeCurve, // DEVICE_CATEGORY_SPEAKER
+        sDefaultMediaVolumeCurve  // DEVICE_CATEGORY_EARPIECE
+    },
+#endif
 };
 
 void AudioPolicyManagerBase::initializeVolumeCurves()
@@ -3654,7 +3891,14 @@ const struct StringToEnum sDeviceNameToEnumTable[] = {
     STRING_TO_ENUM(AUDIO_DEVICE_OUT_ANLG_DOCK_HEADSET),
     STRING_TO_ENUM(AUDIO_DEVICE_OUT_USB_DEVICE),
     STRING_TO_ENUM(AUDIO_DEVICE_OUT_USB_ACCESSORY),
+#ifdef AUDIO_EXTN_FM_ENABLED
+    STRING_TO_ENUM(AUDIO_DEVICE_OUT_FM),
+    STRING_TO_ENUM(AUDIO_DEVICE_OUT_FM_TX),
+#endif
     STRING_TO_ENUM(AUDIO_DEVICE_OUT_ALL_USB),
+#ifdef AUDIO_EXTN_AFE_PROXY_ENABLED
+    STRING_TO_ENUM(AUDIO_DEVICE_OUT_PROXY),
+#endif
     STRING_TO_ENUM(AUDIO_DEVICE_OUT_REMOTE_SUBMIX),
     STRING_TO_ENUM(AUDIO_DEVICE_IN_BUILTIN_MIC),
     STRING_TO_ENUM(AUDIO_DEVICE_IN_BLUETOOTH_SCO_HEADSET),
@@ -3666,6 +3910,10 @@ const struct StringToEnum sDeviceNameToEnumTable[] = {
     STRING_TO_ENUM(AUDIO_DEVICE_IN_ANLG_DOCK_HEADSET),
     STRING_TO_ENUM(AUDIO_DEVICE_IN_DGTL_DOCK_HEADSET),
     STRING_TO_ENUM(AUDIO_DEVICE_IN_USB_ACCESSORY),
+#ifdef AUDIO_EXTN_FM_ENABLED
+    STRING_TO_ENUM(AUDIO_DEVICE_IN_FM_RX),
+    STRING_TO_ENUM(AUDIO_DEVICE_IN_FM_RX_A2DP),
+#endif
 };
 
 const struct StringToEnum sFlagNameToEnumTable[] = {
@@ -3675,6 +3923,12 @@ const struct StringToEnum sFlagNameToEnumTable[] = {
     STRING_TO_ENUM(AUDIO_OUTPUT_FLAG_DEEP_BUFFER),
     STRING_TO_ENUM(AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD),
     STRING_TO_ENUM(AUDIO_OUTPUT_FLAG_NON_BLOCKING),
+#ifdef AUDIO_EXTN_INCALL_MUSIC_ENABLED
+    STRING_TO_ENUM(AUDIO_OUTPUT_FLAG_INCALL_MUSIC),
+#endif
+#ifdef AUDIO_EXTN_COMPRESS_VOIP_ENABLED
+    STRING_TO_ENUM(AUDIO_OUTPUT_FLAG_VOIP_RX),
+#endif
 };
 
 const struct StringToEnum sFormatNameToEnumTable[] = {
@@ -3683,6 +3937,26 @@ const struct StringToEnum sFormatNameToEnumTable[] = {
     STRING_TO_ENUM(AUDIO_FORMAT_MP3),
     STRING_TO_ENUM(AUDIO_FORMAT_AAC),
     STRING_TO_ENUM(AUDIO_FORMAT_VORBIS),
+#ifdef AUDIO_EXTN_FORMATS_ENABLED
+    STRING_TO_ENUM(AUDIO_FORMAT_AC3),
+    STRING_TO_ENUM(AUDIO_FORMAT_EAC3),
+    STRING_TO_ENUM(AUDIO_FORMAT_DTS),
+    STRING_TO_ENUM(AUDIO_FORMAT_DTS_LBR),
+    STRING_TO_ENUM(AUDIO_FORMAT_WMA),
+    STRING_TO_ENUM(AUDIO_FORMAT_WMA_PRO),
+    STRING_TO_ENUM(AUDIO_FORMAT_AAC_ADIF),
+    STRING_TO_ENUM(AUDIO_FORMAT_AMR_NB),
+    STRING_TO_ENUM(AUDIO_FORMAT_AMR_WB),
+    STRING_TO_ENUM(AUDIO_FORMAT_AMR_WB_PLUS),
+    STRING_TO_ENUM(AUDIO_FORMAT_EVRC),
+    STRING_TO_ENUM(AUDIO_FORMAT_EVRCB),
+    STRING_TO_ENUM(AUDIO_FORMAT_EVRCWB),
+    STRING_TO_ENUM(AUDIO_FORMAT_QCELP),
+    STRING_TO_ENUM(AUDIO_FORMAT_MP2),
+    STRING_TO_ENUM(AUDIO_FORMAT_EVRCNW),
+    STRING_TO_ENUM(AUDIO_FORMAT_PCM_16_BIT_OFFLOAD),
+    STRING_TO_ENUM(AUDIO_FORMAT_PCM_24_BIT_OFFLOAD),
+#endif
 };
 
 const struct StringToEnum sOutChannelsNameToEnumTable[] = {
@@ -3690,12 +3964,22 @@ const struct StringToEnum sOutChannelsNameToEnumTable[] = {
     STRING_TO_ENUM(AUDIO_CHANNEL_OUT_STEREO),
     STRING_TO_ENUM(AUDIO_CHANNEL_OUT_5POINT1),
     STRING_TO_ENUM(AUDIO_CHANNEL_OUT_7POINT1),
+#ifdef AUDIO_EXTN_DS1_DOLBY_DDP_ENABLED
+    STRING_TO_ENUM(AUDIO_CHANNEL_OUT_2POINT1),
+    STRING_TO_ENUM(AUDIO_CHANNEL_OUT_QUAD),
+    STRING_TO_ENUM(AUDIO_CHANNEL_OUT_SURROUND),
+    STRING_TO_ENUM(AUDIO_CHANNEL_OUT_PENTA),
+    STRING_TO_ENUM(AUDIO_CHANNEL_OUT_6POINT1),
+#endif
 };
 
 const struct StringToEnum sInChannelsNameToEnumTable[] = {
     STRING_TO_ENUM(AUDIO_CHANNEL_IN_MONO),
     STRING_TO_ENUM(AUDIO_CHANNEL_IN_STEREO),
     STRING_TO_ENUM(AUDIO_CHANNEL_IN_FRONT_BACK),
+#ifdef AUDIO_EXTN_SSR_ENABLED
+    STRING_TO_ENUM(AUDIO_CHANNEL_IN_5POINT1),
+#endif
 };
 
 
